@@ -1,0 +1,121 @@
+import cv2
+import numpy as np
+import smtplib
+from tensorflow.keras.models import load_model
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+
+# ---------------------------
+# EMAIL ALERT FUNCTION
+# ---------------------------
+
+def send_alert_email_with_image(prob, image_path):
+    sender_email = "rosewin0000@gmail.com"
+    receiver_email = "vjjoan77@gmail.com"
+    password = "hiqm ygfi oebo qxip"   # Gmail App Password
+
+    subject = "⚠️ Violence Alert Detected!"
+    body = f"Warning! Violence probability detected: {prob:.2f}"
+
+    msg = MIMEMultipart()
+    msg["From"] = sender_email
+    msg["To"] = receiver_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body))
+
+    # Attach image
+    with open(image_path, "rb") as f:
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(f.read())
+    encoders.encode_base64(part)
+    part.add_header("Content-Disposition", f"attachment; filename={image_path}")
+    msg.attach(part)
+
+    server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
+    server.login(sender_email, password)
+    server.sendmail(sender_email, receiver_email, msg.as_string())
+    server.quit()
+    print("📨 Violence alert email sent successfully!")
+
+
+# ---------------------------
+# MODEL + PARAMETERS
+# ---------------------------
+
+model = load_model("fight_detection_model.h5")
+
+VIDEO_PATH = "TestVideos/test4.mp4"     # Change this
+FRAME_SIZE = (224, 224)
+SEGMENT_FRAMES = 10          # Same as training
+THRESHOLD = 0.6              # Violence probability threshold
+
+# Only send one email per run
+alert_sent = False
+
+
+# ---------------------------
+# FRAME PROCESSING FUNCTION
+# ---------------------------
+
+def preprocess_frame(frame):
+    frame = cv2.resize(frame, FRAME_SIZE)
+    frame = frame / 255.0
+    return frame
+
+
+# ---------------------------
+# MAIN DETECTION LOOP
+# ---------------------------
+
+cap = cv2.VideoCapture(VIDEO_PATH)
+frames_buffer = []
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    # Prepare frame
+    processed = preprocess_frame(frame)
+    frames_buffer.append(processed)
+
+    # Keep only last 10 frames
+    if len(frames_buffer) > SEGMENT_FRAMES:
+        frames_buffer.pop(0)
+
+    # Predict only when buffer is full
+    if len(frames_buffer) == SEGMENT_FRAMES:
+        input_batch = np.expand_dims(np.array(frames_buffer), axis=0)
+        pred = model.predict(input_batch, verbose=0)[0]
+        violence_prob = pred[0]
+
+        if violence_prob > THRESHOLD:
+            alert_text = f"⚠Fight Detected ({violence_prob:.2f})"
+            color = (0, 0, 255)
+
+            # EMAIL ALERT (sent once)
+            if not alert_sent:
+                snapshot = "violence_frame.jpg"
+                cv2.imwrite(snapshot, frame)
+                send_alert_email_with_image(violence_prob, snapshot)
+                alert_sent = True
+
+        else:
+            alert_text = f"Safe ({violence_prob:.2f})"
+            color = (0, 255, 0)
+
+        # Overlay alert
+        cv2.putText(frame, alert_text, (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+
+
+    cv2.imshow("Violence Detection", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+
+cap.release()
+cv2.destroyAllWindows()
